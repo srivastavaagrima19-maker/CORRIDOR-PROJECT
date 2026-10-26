@@ -1,0 +1,21 @@
+{
+  "source": "https://explore.overturemaps.org/",
+  "bboxString": "-87.66541727329984,41.853990046328136,-87.64918484882823,41.860409108176526",
+  "bbox": {
+    "west": -87.66541727329984,
+    "south": 41.853990046328136,
+    "east": -87.64918484882823,
+    "north": 41.860409108176526
+  },
+  "release": "2026-10-21.0",
+  "layers": [
+    "building",
+    "building_part",
+    "division",
+    "division_boundary",
+    "place",
+    "segment"
+  ],
+  "generatedAt": "2026-10-25T10:10:49.039Z",
+  "viewUrl": "https://explore.overturemaps.org/?utm_source=chatgpt.com&mode=explore#15.66/41.8572/-87.657301"
+}

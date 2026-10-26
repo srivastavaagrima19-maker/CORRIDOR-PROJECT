@@ -1,0 +1,20 @@
+CHICAGO CORRIDOR EXPLORER — UI SETUP
+
+1. Open the extracted chicago_corridor_project folder in VS Code.
+2. Open Terminal > New Terminal.
+3. Run these commands one at a time:
+
+   python -m venv .venv
+   .venv\\Scripts\\activate
+   python -m pip install -r requirements-ui.txt
+   python -m streamlit run app.py
+
+4. Streamlit should open a browser tab. If not, open http://localhost:8501
+5. Choose a neighborhood in the left sidebar and click “Download data and find corridors”.
+
+IMPORTANT
+- Internet is required to download OpenStreetMap data.
+- First run may take several minutes and can fail temporarily if the public OSM/Overpass service is busy.
+- The app does not overwrite your earlier data files or scripts.
+- It uses the same general method as discover_functional_corridors.py: nearby-business counts, percentile road scores, connected road components, and buffered corridor boundaries. It adapts connectivity to OpenStreetMap road endpoint IDs because downloaded OSM road data does not use the original dataset's connectors field.
+- Results are candidate corridors, not official or validated boundaries. Check them against maps and local knowledge.

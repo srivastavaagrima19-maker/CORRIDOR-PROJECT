@@ -1,0 +1,6 @@
+spatial_cluster,place_count,category_count,dominant_category,dominant_category_count,dominant_share,cluster_type
+0,1655,145,restaurant,217,0.1311178247734139,mixed-use
+1,5,3,christian_place_of_worship,2,0.4,mixed-use
+2,10,7,restaurant,3,0.3,mixed-use
+3,104,46,home_service,9,0.08653846153846154,mixed-use
+4,12,12,arcade,1,0.08333333333333333,mixed-use
