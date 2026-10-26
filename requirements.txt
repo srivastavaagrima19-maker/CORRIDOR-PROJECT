@@ -1,4 +1,3 @@
-```text
 streamlit>=1.40
 osmnx>=2.0
 geopandas>=1.0
@@ -7,4 +6,3 @@ networkx>=3.3
 folium>=0.18
 streamlit-folium>=0.24
 shapely>=2.0
-```
