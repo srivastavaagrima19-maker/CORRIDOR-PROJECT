@@ -6,6 +6,7 @@ import geopandas as gpd
 import pandas as pd
 import streamlit as st
 import folium
+import altair as alt
 
 from streamlit_folium import st_folium
 from shapely.geometry import box, Point
@@ -33,6 +34,7 @@ st.info(
 )
 
 
+
 # ============================================================
 # 2. STUDY AREAS
 # ============================================================
@@ -42,19 +44,724 @@ ORIGINAL_AREA = "Wicker Park–Bucktown (original study area)"
 LOGAN_AREA = "Logan Square"
 PILSEN_AREA = "Pilsen"
 CHINATOWN_AREA = "Chinatown"
+WEST_LOOP_AREA = "West Loop"
+RIVER_NORTH_AREA = "River North"
+LINCOLN_PARK_AREA = "Lincoln Park"
 
 AREAS = [
     ORIGINAL_AREA,
     LOGAN_AREA,
     PILSEN_AREA,
     CHINATOWN_AREA,
+    WEST_LOOP_AREA,
+    RIVER_NORTH_AREA,
+    LINCOLN_PARK_AREA,
 ]
 
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR / "data"
+CSV_PATH = DATA_DIR / "chicago_corridors_master_cleaned_1_130.csv"
+corridor_df = pd.read_csv(CSV_PATH)
+JOB = "median_tract_job_density"
+POP = "median_tract_population_density"
+LQ = "city_category_location_quotient"
+CAPTURE = "city_category_capture_share"
+
+METRICS = [JOB, POP, LQ, CAPTURE]
+for col in METRICS:
+    corridor_df[col] = pd.to_numeric(
+        corridor_df[col],
+        errors="coerce"
+    )
+
+corridor_df = corridor_df.dropna(
+    subset=METRICS
+).copy()
+
+metric_means = corridor_df[METRICS].mean()
+metric_stds = corridor_df[METRICS].std()
+
+for col in METRICS:
+    corridor_df[f"{col}_z"] = (
+        corridor_df[col] - metric_means[col]
+    ) / metric_stds[col]
+
+corridor_df["abs_job_z"] = corridor_df[f"{JOB}_z"].abs()
+corridor_df["abs_pop_z"] = corridor_df[f"{POP}_z"].abs()
+corridor_df["abs_lq_z"] = corridor_df[f"{LQ}_z"].abs()
+corridor_df["abs_capture_z"] = corridor_df[f"{CAPTURE}_z"].abs()
+
+corridor_df["misfit_score"] = (
+    corridor_df["abs_job_z"]
+    + corridor_df["abs_pop_z"]
+    + corridor_df["abs_lq_z"]
+    + corridor_df["abs_capture_z"]
+) / 4
+
+corridor_df["misfit_status"] = corridor_df["misfit_score"].apply(
+    lambda x: "Misfit" if x >= 1.0 else "Typical"
+)
+
+def get_reason(row):
+
+    metrics = {
+        "Job Density": row[f"{JOB}_z"],
+        "Population Density": row[f"{POP}_z"],
+        "Location Quotient": row[f"{LQ}_z"],
+        "Capture Share": row[f"{CAPTURE}_z"],
+    }
+
+    metric_name, z_value = max(
+        metrics.items(),
+        key=lambda x: abs(x[1])
+    )
+
+    if z_value > 0:
+        direction = "above"
+    else:
+        direction = "below"
+
+    return (
+        f"{metric_name} is "
+        f"{abs(z_value):.2f} standard deviations "
+        f"{direction} the Chicago corridor average."
+    )
+
+corridor_df["misfit_reason"] = corridor_df.apply(
+    get_reason,
+    axis=1
+)
+
+corridor_df = corridor_df.sort_values(
+    "misfit_score",
+    ascending=False
+).reset_index(drop=True)
+corridor_df = corridor_df.sort_values(
+    "misfit_score",
+    ascending=False
+).reset_index(drop=True)
+st.header("📊 Chicago Corridor Misfit Detector")
+
+st.write(
+    "This analysis identifies corridors that differ from the "
+    "typical pattern of the available Chicago corridor sample."
+)
+
+st.info(
+    "Misfit Score is based on the average absolute z-score "
+    "across job density, population density, location quotient, "
+    "and capture share. A score of 1.0 or higher is classified "
+    "as a Misfit."
+)
+
+col1, col2, col3, col4 = st.columns(4)
+
+col1.metric(
+    "Corridors Analyzed",
+    len(corridor_df)
+)
+
+col2.metric(
+    "Misfit Corridors",
+    int((corridor_df["misfit_status"] == "Misfit").sum())
+)
+
+col3.metric(
+    "Typical Corridors",
+    int((corridor_df["misfit_status"] == "Typical").sum())
+)
+
+col4.metric(
+    "Highest Misfit Score",
+    f"{corridor_df['misfit_score'].max():.2f}"
+)
+# ============================================================
+# INTERACTIVE VISUAL ANALYSIS
+# ============================================================
+
+st.subheader("📈 Interactive Misfit Analysis")
+
+tab1, tab2, tab3 = st.tabs([
+    "📊 Misfit Score Distribution",
+    "🏆 Top Misfit Corridors",
+    "📊 Corridor Metric Profile"
+])
+
+
+# ------------------------------------------------------------
+# TAB 1 — MISFIT SCORE DISTRIBUTION
+# ------------------------------------------------------------
+
+with tab1:
+
+    st.write(
+        "This chart shows how misfit scores are distributed "
+        "across the Chicago corridor sample."
+    )
+
+    score_chart = (
+        alt.Chart(corridor_df)
+        .mark_bar()
+        .encode(
+            x=alt.X(
+                "misfit_score:Q",
+                bin=alt.Bin(maxbins=20),
+                title="Misfit Score"
+            ),
+            y=alt.Y(
+                "count():Q",
+                title="Number of Corridors"
+            ),
+            tooltip=[
+                alt.Tooltip(
+                    "count():Q",
+                    title="Corridors"
+                )
+            ]
+        )
+        .properties(
+            height=400
+        )
+    )
+
+    threshold_line = (
+        alt.Chart(
+            pd.DataFrame({"threshold": [1.0]})
+        )
+        .mark_rule(
+            strokeDash=[6, 4]
+        )
+        .encode(
+            x="threshold:Q"
+        )
+    )
+
+    st.altair_chart(
+        score_chart + threshold_line,
+        use_container_width=True
+    )
+
+    st.caption(
+        "The dashed line at 1.0 represents the threshold used "
+        "to classify a corridor as a Misfit."
+    )
+
+
+# ------------------------------------------------------------
+# TAB 2 — TOP MISFIT CORRIDORS
+# ------------------------------------------------------------
+
+with tab2:
+
+    st.write(
+        "Compare the corridors with the highest overall misfit scores."
+    )
+
+    max_top = min(25, len(corridor_df))
+
+    top_n = st.slider(
+        "Number of corridors to display",
+        min_value=5,
+        max_value=max_top,
+        value=min(10, max_top)
+    )
+
+    top_df = (
+        corridor_df
+        .nlargest(top_n, "misfit_score")
+        .copy()
+    )
+
+    top_df["corridor_label"] = (
+    top_df["entity_id"].astype(str)
+    + " — "
+    + top_df["corridor_name"].astype(str)
+)
+    top_chart = (
+        alt.Chart(top_df)
+        .mark_bar()
+        .encode(
+            x=alt.X(
+                "misfit_score:Q",
+                title="Misfit Score"
+            ),
+            y=alt.Y(
+                "corridor_label:N",
+                sort="-x",
+                title="Corridor"
+            ),
+            tooltip=[
+                alt.Tooltip(
+                    "entity_id:N",
+                    title="Entity ID"
+                ),
+                alt.Tooltip(
+                    "corridor:N",
+                    title="Corridor"
+                ),
+                alt.Tooltip(
+                    "business_category:N",
+                    title="Category"
+                ),
+                alt.Tooltip(
+                    "misfit_score:Q",
+                    title="Misfit Score",
+                    format=".2f"
+                ),
+                alt.Tooltip(
+                    "misfit_status:N",
+                    title="Status"
+                )
+            ]
+        )
+        .properties(
+            height=max(350, top_n * 35)
+        )
+    )
+
+    st.altair_chart(
+        top_chart,
+        width="stretch"
+    )
+
+
+# ------------------------------------------------------------
+# TAB 3 — FOUR-METRIC Z-SCORE HEATMAP
+# ------------------------------------------------------------
+
+with tab3:
+
+    st.write(
+        "This heatmap shows how strongly each selected corridor "
+        "differs from the typical Chicago corridor across all "
+        "four metrics."
+    )
+
+    max_heatmap = min(30, len(corridor_df))
+
+    heatmap_n = st.slider(
+        "Number of corridors to display",
+        min_value=5,
+        max_value=max_heatmap,
+        value=min(15, max_heatmap),
+        key="heatmap_n"
+    )
+
+    heatmap_df = (
+        corridor_df
+        .nlargest(heatmap_n, "misfit_score")
+        .copy()
+    )
+
+    # ============================================================
+# CORRIDOR METRIC PROFILE
+# ============================================================
+
+profile_df = corridor_df[
+    [
+        "entity_id",
+        "corridor_name",
+        f"{JOB}_z",
+        f"{POP}_z",
+        f"{LQ}_z",
+        f"{CAPTURE}_z"
+    ]
+].copy()
+
+profile_df["corridor_label"] = (
+    profile_df["corridor_name"].astype(str)
+)
+
+profile_ids = profile_df["entity_id"].tolist()
+
+selected_profile_id = st.selectbox(
+    "Select a corridor to view its metric profile",
+    profile_ids,
+    key="profile_corridor_selector"
+)
+
+selected_profile = profile_df[
+    profile_df["entity_id"] == selected_profile_id
+].iloc[0]
+
+profile_data = pd.DataFrame({
+    "Metric": [
+        "Job Density",
+        "Population Density",
+        "Location Quotient",
+        "Capture Share"
+    ],
+    "Z-Score": [
+        selected_profile[f"{JOB}_z"],
+        selected_profile[f"{POP}_z"],
+        selected_profile[f"{LQ}_z"],
+        selected_profile[f"{CAPTURE}_z"]
+    ]
+})
+
+profile_chart = (
+    alt.Chart(profile_data)
+    .mark_bar()
+    .encode(
+        y=alt.Y(
+            "Metric:N",
+            sort=[
+                "Job Density",
+                "Population Density",
+                "Location Quotient",
+                "Capture Share"
+            ],
+            title=None
+        ),
+        x=alt.X(
+            "Z-Score:Q",
+            title="Standard Deviations from Chicago Corridor Average"
+        ),
+        color=alt.condition(
+            alt.datum["Z-Score"] >= 0,
+            alt.value("#2166ac"),
+            alt.value("#b2182b")
+        ),
+        tooltip=[
+            alt.Tooltip(
+                "Metric:N",
+                title="Metric"
+            ),
+            alt.Tooltip(
+                "Z-Score:Q",
+                title="Z-Score",
+                format="+.2f"
+            )
+        ]
+    )
+    .properties(
+        height=300
+    )
+)
+
+st.markdown(
+    f"### 📍 {selected_profile['corridor_name']}"
+)
+
+st.altair_chart(
+    profile_chart,
+    width="stretch"
+)
+
+st.caption(
+    "Positive values indicate performance above the Chicago corridor average; "
+    "negative values indicate performance below the average. "
+    "The farther a bar extends from zero, the stronger the deviation."
+)
+# ============================================================
+# INTERACTIVE CORRIDOR MISFIT EXPLORER
+# ============================================================
+
+st.header("🔎 Interactive Corridor Explorer")
+
+st.write(
+    "Explore each Chicago corridor individually. "
+    "Select a corridor using its full Entity ID to view "
+    "its category, misfit score, reason, and metric details."
+)
+
+
+# ============================================================
+# SPLIT CORRIDORS INTO MISFIT AND TYPICAL
+# ============================================================
+
+misfit_df = corridor_df[
+    corridor_df["misfit_status"] == "Misfit"
+].copy()
+
+typical_df = corridor_df[
+    corridor_df["misfit_status"] == "Typical"
+].copy()
+
+
+# ============================================================
+# MISFIT CORRIDORS
+# ============================================================
+
+st.subheader("🔴 Misfit Corridors")
+
+st.caption(
+    f"{len(misfit_df)} corridors are classified as Misfit "
+    f"(Misfit Score ≥ 1.0)."
+)
+
+if len(misfit_df) > 0:
+
+    misfit_ids = misfit_df["entity_id"].tolist()
+
+    selected_misfit_id = st.selectbox(
+        "Select a Misfit Corridor",
+        misfit_ids,
+        key="misfit_corridor_selector"
+    )
+
+    selected_misfit = misfit_df[
+        misfit_df["entity_id"] == selected_misfit_id
+    ].iloc[0]
+
+    st.markdown("### 📍 Selected Misfit Corridor")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        st.markdown("**Entity ID**")
+
+        st.code(
+            selected_misfit["entity_id"],
+            language=None
+        )
+
+        st.markdown("**Corridor**")
+
+        st.info(
+            str(selected_misfit["corridor_name"])
+        )
+
+        st.markdown("**Business Category**")
+
+        st.info(
+            str(selected_misfit["business_category"])
+        )
+
+    with col2:
+
+        st.metric(
+            "Misfit Score",
+            f"{selected_misfit['misfit_score']:.2f}"
+        )
+
+        st.markdown("**Status**")
+
+        st.error("🔴 Misfit")
+
+        st.markdown("**Why is this a misfit?**")
+
+        st.warning(
+            selected_misfit["misfit_reason"]
+        )
+
+    st.markdown("### 📊 Corridor Metrics")
+
+    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+
+    metric_col1.metric(
+        "Job Density",
+        f"{selected_misfit[JOB]:,.2f}"
+    )
+
+    metric_col2.metric(
+        "Population Density",
+        f"{selected_misfit[POP]:,.2f}"
+    )
+
+    metric_col3.metric(
+        "Location Quotient",
+        f"{selected_misfit[LQ]:,.2f}"
+    )
+
+    metric_col4.metric(
+        "Capture Share",
+        f"{selected_misfit[CAPTURE]:,.2f}"
+    )
+
+    st.markdown("### 📐 Difference from Chicago Corridor Average")
+
+    z_col1, z_col2, z_col3, z_col4 = st.columns(4)
+
+    z_col1.metric(
+        "Job Density",
+        f"{selected_misfit[f'{JOB}_z']:+.2f} SD"
+    )
+
+    z_col2.metric(
+        "Population Density",
+        f"{selected_misfit[f'{POP}_z']:+.2f} SD"
+    )
+
+    z_col3.metric(
+        "Location Quotient",
+        f"{selected_misfit[f'{LQ}_z']:+.2f} SD"
+    )
+
+    z_col4.metric(
+        "Capture Share",
+        f"{selected_misfit[f'{CAPTURE}_z']:+.2f} SD"
+    )
+
+else:
+
+    st.success("No Misfit corridors found.")
+
+
+# ============================================================
+# TYPICAL CORRIDORS
+# ============================================================
+
+st.divider()
+
+st.subheader("🟢 Typical Corridors")
+
+st.caption(
+    f"{len(typical_df)} corridors are classified as Typical "
+    f"(Misfit Score < 1.0)."
+)
+
+if len(typical_df) > 0:
+
+    typical_ids = typical_df["entity_id"].tolist()
+
+    selected_typical_id = st.selectbox(
+        "Select a Typical Corridor",
+        typical_ids,
+        key="typical_corridor_selector"
+    )
+
+    selected_typical = typical_df[
+        typical_df["entity_id"] == selected_typical_id
+    ].iloc[0]
+
+    st.markdown("### 📍 Selected Typical Corridor")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        st.markdown("**Entity ID**")
+
+        st.code(
+            selected_typical["entity_id"],
+            language=None
+        )
+
+        st.markdown("**Corridor**")
+
+        st.info(
+            str(selected_typical["corridor_name"])
+        )
+
+        st.markdown("**Business Category**")
+
+        st.info(
+            str(selected_typical["business_category"])
+        )
+
+    with col2:
+
+        st.metric(
+            "Misfit Score",
+            f"{selected_typical['misfit_score']:.2f}"
+        )
+
+        st.markdown("**Status**")
+
+        st.success("🟢 Typical")
+
+        st.markdown("**Why is this Typical?**")
+
+        st.info(
+            selected_typical["misfit_reason"]
+        )
+
+    st.markdown("### 📊 Corridor Metrics")
+
+    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+
+    metric_col1.metric(
+        "Job Density",
+        f"{selected_typical[JOB]:,.2f}"
+    )
+
+    metric_col2.metric(
+        "Population Density",
+        f"{selected_typical[POP]:,.2f}"
+    )
+
+    metric_col3.metric(
+        "Location Quotient",
+        f"{selected_typical[LQ]:,.2f}"
+    )
+
+    metric_col4.metric(
+        "Capture Share",
+        f"{selected_typical[CAPTURE]:,.2f}"
+    )
+
+    st.markdown("### 📐 Difference from Chicago Corridor Average")
+
+    z_col1, z_col2, z_col3, z_col4 = st.columns(4)
+
+    z_col1.metric(
+        "Job Density",
+        f"{selected_typical[f'{JOB}_z']:+.2f} SD"
+    )
+
+    z_col2.metric(
+        "Population Density",
+        f"{selected_typical[f'{POP}_z']:+.2f} SD"
+    )
+
+    z_col3.metric(
+        "Location Quotient",
+        f"{selected_typical[f'{LQ}_z']:+.2f} SD"
+    )
+
+    z_col4.metric(
+        "Capture Share",
+        f"{selected_typical[f'{CAPTURE}_z']:+.2f} SD"
+    )
+
+else:
+
+    st.success("No Typical corridors found.")
+
+
+
+display_df = corridor_df.copy()
+display_df = display_df[
+    [
+        "entity_id",
+        "corridor_name",
+        "business_category",
+        "misfit_score",
+        "misfit_status",
+        "misfit_reason"
+    ]
+]
+
+display_df = display_df.rename(
+    columns={
+        "corridor_name": "Corridor",
+        "business_category": "Category",
+        "misfit_score": "Misfit Score",
+        "misfit_status": "Status",
+        "misfit_reason": "Reason for Misfit"
+    }
+)
+
+display_df["Misfit Score"] = display_df[
+    "Misfit Score"
+].round(2)
+
+st.dataframe(
+    display_df,
+    width="stretch",
+    hide_index=True,
+    height=700
+)
+
+DATA_DIR = APP_DIR / "data"
 PILSEN_DATA_DIR = DATA_DIR / "pilsen"
 CHINATOWN_DATA_DIR = DATA_DIR / "chinatown"
+WEST_LOOP_DATA_DIR = DATA_DIR / "westloop"
+RIVER_NORTH_DATA_DIR = DATA_DIR / "rivernorth"
+LINCOLN_PARK_DATA_DIR = DATA_DIR / "Lincoln park"
 CACHE_DIR = DATA_DIR / "osm_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -62,7 +769,9 @@ LOGAN_BBOX = (-87.717, 41.921, -87.692, 41.931)
 
 LOGAN_BBOX = (-87.717, 41.921, -87.692, 41.931)
 PILSEN_BBOX = (-87.665, 41.854, -87.649, 41.860)
-
+WEST_LOOP_BBOX = (-87.655, 41.876, -87.634, 41.884)
+RIVER_NORTH_BBOX = (-87.640, 41.888, -87.624, 41.895)
+LINCOLN_PARK_BBOX = (-87.656, 41.918, -87.641, 41.924)
 
 LOGAN_PLACE_FILE = (
     "overture-2026-09-23.1-place--87.717,41.921,-87.692,41.931.geojson"
@@ -97,7 +806,17 @@ CHINATOWN_SEGMENT_FILE = (
 CHINATOWN_BUILDING_FILE = (
     "overture-2026-10-21.0-building--87.639,41.848,-87.623,41.854.geojson"
 )
+WEST_LOOP_PLACE_FILE = "overture-2026-10-21.0-place--87.655,41.876,-87.634,41.884.geojson"
+WEST_LOOP_SEGMENT_FILE = "overture-2026-10-21.0-segment--87.655,41.876,-87.634,41.884.geojson"
+WEST_LOOP_BUILDING_FILE = "overture-2026-10-21.0-building--87.655,41.876,-87.634,41.884.geojson"
 
+RIVER_NORTH_PLACE_FILE = "overture-2026-10-21.0-place--87.640,41.888,-87.624,41.895.geojson"
+RIVER_NORTH_SEGMENT_FILE = "overture-2026-10-21.0-segment--87.640,41.888,-87.624,41.895.geojson"
+RIVER_NORTH_BUILDING_FILE = "overture-2026-10-21.0-building--87.640,41.888,-87.624,41.895.geojson"
+
+LINCOLN_PARK_PLACE_FILE = "overture-2026-10-21.0-place--87.656,41.918,-87.641,41.924.geojson"
+LINCOLN_PARK_SEGMENT_FILE = "overture-2026-10-21.0-segment--87.656,41.918,-87.641,41.924.geojson"
+LINCOLN_PARK_BUILDING_FILE = "overture-2026-10-21.0-building--87.656,41.918,-87.641,41.924.geojson"
 
 
 # ============================================================
@@ -140,6 +859,9 @@ CORRIDOR_COLORS = {
     LOGAN_AREA: "#d62728",
     PILSEN_AREA: "#2E8B57",
     CHINATOWN_AREA: "#e67e22",
+    WEST_LOOP_AREA: "#9467bd",
+    RIVER_NORTH_AREA: "#17becf",
+    LINCOLN_PARK_AREA: "#8c564b",
 }
 
 
@@ -569,6 +1291,24 @@ def get_overture_logan_data(area=LOGAN_AREA):
         segments_path = CHINATOWN_DATA_DIR / CHINATOWN_SEGMENT_FILE
         buildings_path = CHINATOWN_DATA_DIR / CHINATOWN_BUILDING_FILE
 
+    elif area == WEST_LOOP_AREA:
+        places_path = WEST_LOOP_DATA_DIR / WEST_LOOP_PLACE_FILE
+        segments_path = WEST_LOOP_DATA_DIR / WEST_LOOP_SEGMENT_FILE
+        buildings_path = WEST_LOOP_DATA_DIR / WEST_LOOP_BUILDING_FILE
+
+    elif area == RIVER_NORTH_AREA:
+        places_path = RIVER_NORTH_DATA_DIR / RIVER_NORTH_PLACE_FILE
+        segments_path = RIVER_NORTH_DATA_DIR / RIVER_NORTH_SEGMENT_FILE
+        buildings_path = RIVER_NORTH_DATA_DIR / RIVER_NORTH_BUILDING_FILE
+
+    elif area == LINCOLN_PARK_AREA:
+        places_path = LINCOLN_PARK_DATA_DIR / LINCOLN_PARK_PLACE_FILE
+        segments_path = LINCOLN_PARK_DATA_DIR / LINCOLN_PARK_SEGMENT_FILE
+        buildings_path = LINCOLN_PARK_DATA_DIR / LINCOLN_PARK_BUILDING_FILE
+    
+
+        
+
     else:
         places_path = DATA_DIR / LOGAN_PLACE_FILE
         segments_path = DATA_DIR / LOGAN_SEGMENT_FILE
@@ -673,6 +1413,18 @@ def get_overture_logan_data(area=LOGAN_AREA):
     elif area == CHINATOWN_AREA:
         study_bbox = CHINATOWN_BBOX
         area_name = "Chinatown"
+
+    elif area == WEST_LOOP_AREA:
+            study_bbox = WEST_LOOP_BBOX
+            area_name = "West Loop"
+
+    elif area == RIVER_NORTH_AREA:
+      study_bbox = RIVER_NORTH_BBOX
+      area_name = "River North"
+
+    elif area == LINCOLN_PARK_AREA:
+     study_bbox = LINCOLN_PARK_BBOX
+     area_name = "Lincoln Park"
 
     else:
         study_bbox = LOGAN_BBOX
@@ -794,17 +1546,21 @@ def build_road_components(active_roads, snap_tolerance_m=12):
 # ============================================================
 
 
+
 def make_corridor_boundary(
     road_geometries,
     nearby_business_points=None,
-    boundary_width=20,
+    boundary_width=30,
     business_buffer=12,
     smoothing_distance=5,
+    road_buffer_distance=None,
 ):
     """
-    Create a corridor polygon around connected roads and nearby
-    business points. All distances are in metres.
+    Create a corridor polygon from merged connected roads
+    and nearby business locations. All distances are metres.
     """
+
+    # Remove empty geometries
     road_geometries = [
         geom for geom in road_geometries
         if geom is not None and not geom.is_empty
@@ -813,20 +1569,28 @@ def make_corridor_boundary(
     if not road_geometries:
         return None
 
+    # 1. Merge all connected road geometries
     roads_union = unary_union(road_geometries)
 
-    # Initial boundary around the connected road network.
-    corridor = roads_union.buffer(
-        max(float(boundary_width), 1.0),
+        # 2. Buffer the merged road network to form the main boundary
+    actual_road_buffer = (
+        boundary_width
+        if road_buffer_distance is None
+        else road_buffer_distance
+    )
+
+    road_buffer = roads_union.buffer(
+        max(float(actual_road_buffer), 1.0),
         cap_style="round",
         join_style="round",
     )
 
-    if corridor.is_empty:
+    if road_buffer.is_empty:
         return None
 
-    # Include business points only when they are reasonably close
-    # to this road component. This avoids pulling in distant businesses.
+    corridor = road_buffer
+
+    # 3. Include nearby businesses, but only close to the roads
     if nearby_business_points is not None:
         points = [
             geom for geom in nearby_business_points
@@ -838,52 +1602,57 @@ def make_corridor_boundary(
                 max(float(business_buffer), 1.0)
             )
 
-            # Keep only the business area connected to the road buffer.
+            # Restrict business areas to the road network vicinity
+            allowed_area = roads_union.buffer(
+                max(float(boundary_width), 1.0)
+                + max(float(business_buffer), 1.0)
+            )
+
             connected_business_area = business_area.intersection(
-                roads_union.buffer(
-                    max(float(boundary_width), 1.0)
-                    + max(float(business_buffer), 1.0)
-                )
+                allowed_area
             )
 
             corridor = unary_union([
-                corridor,
+                road_buffer,
                 connected_business_area,
             ])
 
-    # Smooth small gaps and sharp edges without forcing separate
-    # commercial pockets into one enormous polygon.
+    # 4. Smooth the polygon boundary
     if smoothing_distance > 0:
         distance = min(
             float(smoothing_distance),
-            max(float(boundary_width) * 0.5, 1.0),
+           max(float(actual_road_buffer) * 0.5, 1.0),
         )
+
         smoothed = corridor.buffer(distance).buffer(-distance)
 
         if not smoothed.is_empty:
             corridor = smoothed
 
+    # 5. Repair invalid geometry
     if not corridor.is_valid:
         corridor = corridor.buffer(0)
 
     if corridor.is_empty:
         return None
 
-    # Preserve separate polygons rather than discarding all but
-    # the largest one.
+    # 6. Preserve all polygon parts
     if corridor.geom_type == "GeometryCollection":
         polygons = [
             geom for geom in corridor.geoms
             if geom.geom_type == "Polygon" and not geom.is_empty
         ]
+
         if not polygons:
             return None
+
         corridor = unary_union(polygons)
 
     if corridor.geom_type not in ("Polygon", "MultiPolygon"):
         return None
 
     return corridor
+
 
 
 
@@ -902,11 +1671,14 @@ def analyze(
     max_length,
     min_score,
     boundary_width,
+    boundary_buffer_m=50,
     snap_tolerance_m=12,
 ):
     """Score active roads, group connected segments, and create corridors."""
+
     if edges.empty:
         raise ValueError("There are no road segments to analyze.")
+
     if "u" not in edges.columns or "v" not in edges.columns:
         raise ValueError("Road segments need u and v endpoint IDs.")
 
@@ -942,7 +1714,7 @@ def analyze(
     roads_m["nearby_businesses"] = (
         roads_m["road_id"].map(total_counts).fillna(0).astype(int)
     )
-           # Business density per 100 metres of road
+    # Business density per 100 metres of road
     roads_m["business_density"] = (
         roads_m["nearby_businesses"]
         / roads_m["length_m"].clip(lower=1)
@@ -1075,24 +1847,49 @@ def analyze(
         })
 
         
-        # Create a boundary using connected roads and nearby businesses.
+        
+        # Create a boundary using the complete connected road geometry.
         component_roads = list(component.geometry)
 
-        component_roads_buffer = unary_union(
-            component_roads
-        ).buffer(max(float(buffer_m), 1.0))
+        # Merge road segments into one connected road geometry.
+        merged_roads = unary_union(component_roads)
+
+               # Compare different road buffer distances.
+        buffer_comparison = {}
+
+        for distance in [25, 50, 100]:
+            test_buffer = merged_roads.buffer(distance)
+
+            business_count = places_m.geometry.intersects(
+                test_buffer
+            ).sum()
+
+            buffer_comparison[f"{distance} m"] = int(business_count)
+
+        # Display the comparison for this corridor.
+        st.write(
+            f"Buffer comparison for {candidate_id}:",
+            buffer_comparison
+        )
+
+              # Use the road-buffer slider for boundary formation.
+        component_roads_buffer = merged_roads.buffer(
+            max(float(boundary_buffer_m), 1.0)
+        )
 
         component_businesses = places_m.loc[
             places_m.geometry.intersects(component_roads_buffer)
         ].geometry.tolist()
-
+        # Generate the final corridor polygon.
         boundary_geometry = make_corridor_boundary(
             road_geometries=component_roads,
             nearby_business_points=component_businesses,
             boundary_width=boundary_width,
+            road_buffer_distance=boundary_buffer_m,
             business_buffer=12,
             smoothing_distance=5,
         )
+
 
         
         if boundary_geometry is not None and not boundary_geometry.is_empty:
@@ -1588,20 +2385,36 @@ with st.sidebar:
     )
 
     # Fixed settings (hidden from users)
-    buffer_m = 50
-    min_businesses = 3
-    min_length = 200
-    max_length = 1500
-    min_score = 0.50
-    boundary_width = 30
-    snap_tolerance_m = 12
+    # Existing scoring settings — keep unchanged.
+buffer_m = 50
+min_businesses = 3
+min_length = 200
+max_length = 1500
+min_score = 0.50
+snap_tolerance_m = 12
 
-    run = st.button(
-        "Load / analyze selected neighborhood",
-        type="primary",
-        use_container_width=True,
-    )
+# Interactive corridor boundary settings.
+boundary_buffer_m = st.slider(
+    "Road buffer distance (metres)",
+    min_value=10,
+    max_value=150,
+    value=50,
+    step=5,
+)
 
+boundary_width = st.slider(
+    "Corridor boundary width (metres)",
+    min_value=10,
+    max_value=100,
+    value=60,
+    step=5,
+)
+
+run = st.button(
+    "Load / analyze selected neighborhood",
+    type="primary",
+    use_container_width=True,
+)
 
 if max_length <= min_length:
     st.error("Maximum corridor length must be greater than minimum length.")
@@ -1640,6 +2453,7 @@ if run:
                     max_length=max_length,
                     min_score=min_score,
                     boundary_width=boundary_width,
+                    boundary_buffer_m=boundary_buffer_m,
                     snap_tolerance_m=snap_tolerance_m,
                 )
                 st.session_state["logan_analysis"] = {
@@ -1669,6 +2483,7 @@ if run:
                     max_length=max_length,
                     min_score=min_score,
                     boundary_width=boundary_width,
+                    boundary_buffer_m=boundary_buffer_m,
                     snap_tolerance_m=snap_tolerance_m,
                 )
                 st.session_state["pilsen_analysis"] = {
@@ -1699,6 +2514,7 @@ if run:
                     max_length=max_length,
                     min_score=min_score,
                     boundary_width=boundary_width,
+                    boundary_buffer_m=boundary_buffer_m,
                     snap_tolerance_m=snap_tolerance_m,
                 )
 
@@ -1715,6 +2531,111 @@ if run:
             st.session_state["analysis"] = (
                 st.session_state["chinatown_analysis"]
             )
+
+        elif area_label == WEST_LOOP_AREA:
+            with st.spinner("Reading West Loop data and detecting corridors..."):
+                boundary, places, graph, edges, buildings = (
+                    get_overture_logan_data(WEST_LOOP_AREA)
+                )
+
+                places_out, roads_out, corridors, boundaries = analyze(
+                    boundary=boundary,
+                    places=places,
+                    graph=graph,
+                    edges=edges,
+                    buffer_m=buffer_m,
+                    min_businesses=min_businesses,
+                    min_length=min_length,
+                    max_length=max_length,
+                    min_score=min_score,
+                    boundary_width=boundary_width,
+                    boundary_buffer_m=boundary_buffer_m,
+                    snap_tolerance_m=snap_tolerance_m,
+                )
+
+                st.session_state["west_loop_analysis"] = {
+                    "area": WEST_LOOP_AREA,
+                    "boundary": boundary,
+                    "places": places_out,
+                    "roads": roads_out,
+                    "corridors": corridors,
+                    "boundaries": boundaries,
+                    "buildings": buildings,
+                }
+
+            st.session_state["analysis"] = (
+                st.session_state["west_loop_analysis"]
+            )
+
+        elif area_label == RIVER_NORTH_AREA:
+            with st.spinner("Reading River North data and detecting corridors..."):
+                boundary, places, graph, edges, buildings = (
+                    get_overture_logan_data(RIVER_NORTH_AREA)
+                )
+
+                places_out, roads_out, corridors, boundaries = analyze(
+                    boundary=boundary,
+                    places=places,
+                    graph=graph,
+                    edges=edges,
+                    buffer_m=buffer_m,
+                    min_businesses=min_businesses,
+                    min_length=min_length,
+                    max_length=max_length,
+                    min_score=min_score,
+                    boundary_width=boundary_width,
+                    boundary_buffer_m=boundary_buffer_m,
+                    snap_tolerance_m=snap_tolerance_m,
+                )
+
+                st.session_state["river_north_analysis"] = {
+                    "area": RIVER_NORTH_AREA,
+                    "boundary": boundary,
+                    "places": places_out,
+                    "roads": roads_out,
+                    "corridors": corridors,
+                    "boundaries": boundaries,
+                    "buildings": buildings,
+                }
+
+            st.session_state["analysis"] = (
+                st.session_state["river_north_analysis"]
+            )
+
+        elif area_label == LINCOLN_PARK_AREA:
+            with st.spinner("Reading Lincoln Park data and detecting corridors..."):
+                boundary, places, graph, edges, buildings = (
+                    get_overture_logan_data(LINCOLN_PARK_AREA)
+                )
+
+                places_out, roads_out, corridors, boundaries = analyze(
+                    boundary=boundary,
+                    places=places,
+                    graph=graph,
+                    edges=edges,
+                    buffer_m=buffer_m,
+                    min_businesses=min_businesses,
+                    min_length=min_length,
+                    max_length=max_length,
+                    min_score=min_score,
+                    boundary_width=boundary_width,
+                    boundary_buffer_m=boundary_buffer_m,
+                    snap_tolerance_m=snap_tolerance_m,
+                )
+
+                st.session_state["lincoln_park_analysis"] = {
+                    "area": LINCOLN_PARK_AREA,
+                    "boundary": boundary,
+                    "places": places_out,
+                    "roads": roads_out,
+                    "corridors": corridors,
+                    "boundaries": boundaries,
+                    "buildings": buildings,
+                }
+
+            st.session_state["analysis"] = (
+                st.session_state["lincoln_park_analysis"]
+            ) 
 
 
 
@@ -1938,6 +2859,9 @@ wicker_data = st.session_state.get("wicker_analysis")
 logan_data = st.session_state.get("logan_analysis")
 pilsen_data = st.session_state.get("pilsen_analysis")
 chinatown_data = st.session_state.get("chinatown_analysis")
+west_loop = st.session_state.get("west_loop_analysis")
+river_north = st.session_state.get("river_north_analysis")
+lincoln_park = st.session_state.get("lincoln_park_analysis")
 
 
 
@@ -1981,12 +2905,13 @@ comparison_rows = []
 
 for area_name, data in comparison_data:
     if data is None:
-        comparison_rows.append({
-            "Neighbourhood": area_name,
-            "Road network length (km)": "Not loaded",
-            "Business categories": "Not loaded",
-        })
-        continue
+     comparison_rows.append({
+        "Neighbourhood": area_name,
+        "Total businesses": None,
+        "Highest business category": "Not loaded",
+        "Businesses in highest category": None,
+    })
+    continue
 
     # Calculate total road length in kilometres.
     roads = data.get("roads")
@@ -2050,13 +2975,13 @@ for area_name, data in comparison_data:
 
     # Handle neighbourhoods whose data has not been loaded.
     if data is None:
-        comparison_rows.append({
-            "Neighbourhood": area_name,
-            "Total businesses": "Not loaded",
-            "Highest business category": "Not loaded",
-            "Businesses in highest category": "Not loaded",
-        })
-        continue
+     comparison_rows.append({
+        "Neighbourhood": area_name,
+        "Total businesses": None,
+        "Highest business category": "Not loaded",
+        "Businesses in highest category": None,
+    })
+    continue
 
     # Get the business dataset.
     places = data.get("places")
@@ -2120,7 +3045,7 @@ comparison_table = pd.DataFrame(comparison_rows)
 st.dataframe(
     comparison_table,
     hide_index=True,
-    use_container_width=True,
+    width="stretch",
 )
 
 st.caption(
@@ -2133,6 +3058,9 @@ selected_area_data = {
     LOGAN_AREA: logan_data,
     PILSEN_AREA: pilsen_data,
     CHINATOWN_AREA: chinatown_data,
+    WEST_LOOP_AREA: west_loop,
+    RIVER_NORTH_AREA: river_north,
+    LINCOLN_PARK_AREA: lincoln_park,
 }.get(area_label)
 
 
@@ -2150,6 +3078,9 @@ else:
         LOGAN_AREA: "principal_logan_map",
         PILSEN_AREA: "principal_pilsen_map",
          CHINATOWN_AREA: "principal_chinatown_map",
+         WEST_LOOP_AREA: "principal_west_loop_map",
+         RIVER_NORTH_AREA: "principal_river_north_map",
+         LINCOLN_PARK_AREA: "principal_lincoln_park_map",
     }[area_label]
     render_neighborhood_map(
         selected_area_data,
@@ -2160,9 +3091,97 @@ else:
     st.divider()
     render_business_charts(selected_area_data)
 
+# ============================================================
+# DEBUG: UNCLASSIFIED PLACES
+# ============================================================
 
+st.markdown("### Debug: Unclassified places")
 
+debug_area_data = [
+    (ORIGINAL_AREA, wicker_data),
+    (LOGAN_AREA, logan_data),
+    (PILSEN_AREA, pilsen_data),
+    (CHINATOWN_AREA, chinatown_data),
+    (WEST_LOOP_AREA, west_loop),
+    (RIVER_NORTH_AREA, river_north),
+    (LINCOLN_PARK_AREA, lincoln_park),
+]
 
+debug_area_names = [
+    area for area, data in debug_area_data
+    if data is not None and "places" in data
+]
+
+if debug_area_names:
+    debug_selected_area = st.selectbox(
+        "Choose neighbourhood",
+        debug_area_names,
+        key="debug_unclassified_area",
+    )
+
+    debug_selected_data = dict(debug_area_data)[debug_selected_area]
+    debug_places = debug_selected_data["places"].copy()
+
+    if "functional_group" not in debug_places.columns:
+        debug_places["functional_group"] = debug_places.apply(
+            classify, axis=1
+        )
+
+    group_values = (
+        debug_places["functional_group"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+
+    unclassified = debug_places[
+        group_values.isin([
+            "",
+            "other",
+            "other / unclassified",
+            "unclassified",
+            "unknown",
+            "none",
+            "nan",
+        ])
+    ].copy()
+
+    st.write("Total places:", len(debug_places))
+    st.write("Unclassified places:", len(unclassified))
+
+    if not unclassified.empty:
+        display_columns = [
+            c for c in [
+                "name",
+                "place_name",
+                "names",
+                "primary_category",
+                "category",
+                "analysis_category",
+                "functional_group",
+            ]
+            if c in unclassified.columns
+        ]
+
+        st.dataframe(
+            unclassified[display_columns]
+            if display_columns else unclassified,
+            width="stretch",
+            hide_index=True,
+        )
+
+        st.download_button(
+            "Download unclassified places",
+            unclassified.to_csv(index=False).encode("utf-8"),
+            file_name="unclassified_places.csv",
+            mime="text/csv",
+            key="download_unclassified_places",
+        )
+    else:
+        st.info("No matching unclassified places found.")
+else:
+    st.warning("No neighbourhood datasets are currently loaded.")
 
 # ============================================================
 # 17. DOWNLOADS
@@ -2174,6 +3193,9 @@ download_areas = [
     (logan_data, "logan_square"),
     (pilsen_data, "pilsen"),
     (chinatown_data, "chinatown"),
+    (west_loop, "westloop"),
+    (river_north, "rivernorth"),
+    (lincoln_park, "lincolnpark"),
 ]
 
 

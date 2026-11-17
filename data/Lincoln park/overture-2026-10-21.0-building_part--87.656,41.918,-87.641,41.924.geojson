@@ -1,0 +1,3 @@
+{ "type": "FeatureCollection", "features": [
+{"type":"Feature","properties":{"names":{"primary":"McGrath-Phillips Arena"},"is_underground":false,"sources":[{"property":"","dataset":"OpenStreetMap","license":"ODbL-1.0","record_id":"w1276697095@7","update_time":"2025-05-22T10:17:59.000Z","provider":"osm","resource":"planet","version":"2026-09-06T00:00:00.000Z"}],"building_id":"085eb33d-956d-4f01-90be-c1d5641f0aee","version":1},"geometry":{"type":"Polygon","coordinates":[[[-87.6533579,41.9241559],[-87.6533414,41.9236874],[-87.6533415,41.9236603],[-87.6529332,41.9236652],[-87.6529457,41.9241371],[-87.6529588,41.9241663],[-87.652978,41.9241666],[-87.6533579,41.9241559]]]},"id":"7ec4deea-2c5b-374a-9fe6-09f5dda0f7b3"}
+] }
